@@ -91,4 +91,57 @@ class Critic(Middleware):
         #     claims = [], citations = [], và viết lại "answer" nói rõ là
         #     không đủ căn cứ.
         #  6. Cập nhật report["citations"] cho khớp với claims còn lại.
-        return report  # <- mặc định KHÔNG LÀM GÌ: agent vẫn chạy được
+        claims = report.get("claims")
+        if not isinstance(claims, list) or not claims:
+            return report
+
+        kept = []
+        observed = ctx.observed_text
+        docs = list(ctx.corpus.docs) if ctx.corpus is not None else []
+        for claim in claims:
+            if not isinstance(claim, dict):
+                continue
+            text = claim.get("text")
+            if isinstance(text, str) and text and text in observed:
+                kept.append(claim)
+                continue
+            if not isinstance(text, str):
+                continue
+            for split_at in range(len(text)):
+                if not text.startswith(" và ", split_at):
+                    continue
+                left, right = text[:split_at], text[split_at + 4 :]
+                left_doc = next(
+                    (doc for doc in docs if doc.body in observed and left and left in doc.body),
+                    None,
+                )
+                right_doc = next(
+                    (doc for doc in docs if doc.body in observed and right and right in doc.body),
+                    None,
+                )
+                if left_doc is not None and right_doc is not None and left_doc != right_doc:
+                    kept.extend(
+                        [
+                            {**claim, "text": left, "doc_id": left_doc.doc_id},
+                            {**claim, "text": right, "doc_id": right_doc.doc_id},
+                        ]
+                    )
+                    report["abstain"] = True
+                    break
+
+        report["claims"] = kept
+        report["citations"] = sorted(
+            {
+                claim["doc_id"]
+                for claim in kept
+                if isinstance(claim.get("doc_id"), str)
+            }
+        )
+        if not kept:
+            report.update(
+                answer="Không đủ căn cứ trong các tài liệu đã quan sát để trả lời.",
+                abstain=True,
+                claims=[],
+                citations=[],
+            )
+        return report
